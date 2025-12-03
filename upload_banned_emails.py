@@ -215,8 +215,8 @@ def get_emails_from_sheet():
     logger.info(f"Retrieved {len(values)} rows from Google Sheets")
     
     # Get today's date
-    # today = datetime.now().date()
-    today = datetime(2025, 12, 2).date()
+    today = datetime.now().date()
+    # today = datetime(2025, 12, 2).date()
     print(f"Today's date: {today.strftime('%d.%m.%Y')}")
     logger.info(f"Filtering emails with dates before: {today.strftime('%d.%m.%Y')}")
     print()
