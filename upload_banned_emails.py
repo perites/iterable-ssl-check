@@ -522,7 +522,7 @@ def main():
         slack_message += f"   {total_imported} emails were NOT banned as expected.\n\n"
         slack_message += "List of imported emails:\n"
         for email in all_imported_emails:
-            slack_message += f"  • {email}\n"
+            slack_message += f"{email}\n"
     else:
         slack_message += "✓ All emails were blocked as expected (banned/invalid emails)"
     
