@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Script to read emails from Google Sheets and attempt to upload them to Iterable.
+Script to read emails from Google Sheets and attempt to upload them to Iterable 
+across multiple domains/API keys.
 These emails are expected to be banned and should fail during upload.
 Only processes emails with dates prior to today (not including today).
 """
@@ -67,7 +68,16 @@ SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
 SHEET_NAME = os.getenv("SHEET_NAME", "Main")
 SHEET_RANGE = os.getenv("SHEET_RANGE", "A:D")
 
-ITERABLE_API_KEY = os.getenv("ITERABLE_API_KEY")
+# LOAD ITERABLE KEYS
+# Expected format in .env: ITERABLE_API_KEYS_JSON='{"Domain1": "Key1", "Domain2": "Key2"}'
+ITERABLE_KEYS_JSON_STR = os.getenv("ITERABLE_API_KEYS_JSON", "{}")
+
+try:
+    ITERABLE_API_KEYS = json.loads(ITERABLE_KEYS_JSON_STR)
+except json.JSONDecodeError:
+    logger.error("Failed to parse ITERABLE_API_KEYS_JSON. Ensure it is valid JSON.")
+    ITERABLE_API_KEYS = {}
+
 ITERABLE_BULK_API_URL = os.getenv("ITERABLE_BULK_API_URL", "https://api.iterable.com/api/users/bulkUpdate")
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", "1000"))
 
@@ -82,27 +92,23 @@ required_vars = {
     "GOOGLE_CLIENT_ID": GOOGLE_CREDENTIALS_JSON["client_id"],
     "GOOGLE_CLIENT_SECRET": GOOGLE_CREDENTIALS_JSON["client_secret"],
     "SPREADSHEET_ID": SPREADSHEET_ID,
-    "ITERABLE_API_KEY": ITERABLE_API_KEY
 }
 
 missing_vars = [var for var, value in required_vars.items() if not value]
 if missing_vars:
     error_msg = f"Missing required environment variables: {', '.join(missing_vars)}"
     logger.error(error_msg)
-    logger.error("Please create a .env file with all required variables. See .env.example for reference.")
+    raise ValueError(error_msg)
+
+if not ITERABLE_API_KEYS:
+    error_msg = "ITERABLE_API_KEYS_JSON is missing or empty."
+    logger.error(error_msg)
     raise ValueError(error_msg)
 
 
 def send_message_to_slack(slack_user_id, message):
     """
     Send a message to Slack using a workflow webhook.
-    
-    Args:
-        slack_user_id (str): Slack user ID to notify
-        message (str): Message to send
-        
-    Returns:
-        bool: True if message was sent successfully, False otherwise
     """
     workflow_webhook_url = SLACK_WEBHOOK_URL
     if not workflow_webhook_url:
@@ -142,12 +148,6 @@ def parse_date(date_str):
     """
     Parse date string in DD.MM format to a date object.
     Uses current year for comparison.
-    
-    Args:
-        date_str (str): Date string in DD.MM format
-        
-    Returns:
-        datetime.date or None: Parsed date or None if invalid
     """
     if not date_str or not date_str.strip():
         return None
@@ -165,18 +165,8 @@ def get_emails_from_sheet():
     """
     Reads emails from Google Sheets using the credentials file.
     Only returns emails with dates prior to today (not including today).
-    
-    Sheet structure:
-    Column A: Email
-    Column B: Date (DD.MM format)
-    Column C: Number
-    Column D: Source
-    
-    Returns:
-        list: List of email addresses that match the date criteria
     """
     logger.info("Starting to read emails from Google Sheets")
-    logger.debug(f"Spreadsheet ID: {SPREADSHEET_ID}, Sheet: {SHEET_NAME}")
     
     # Load credentials from OAuth2 user credentials
     creds = Credentials(
@@ -188,17 +178,11 @@ def get_emails_from_sheet():
         scopes=GOOGLE_CREDENTIALS_JSON['scopes']
     )
     
-    logger.debug("Google credentials loaded successfully")
-    
-    # Build the Sheets API service
     service = build('sheets', 'v4', credentials=creds)
-    
-    # Define the range to read all relevant columns
     range_name = f'{SHEET_NAME}!{SHEET_RANGE}'
     
     logger.info(f"Reading data from sheet: {SPREADSHEET_ID}, range: {range_name}")
     
-    # Call the Sheets API
     sheet = service.spreadsheets()
     result = sheet.values().get(
         spreadsheetId=SPREADSHEET_ID,
@@ -209,80 +193,43 @@ def get_emails_from_sheet():
     
     if not values:
         logger.warning("No data found in the sheet")
-        print("No data found in the sheet.")
         return []
     
     logger.info(f"Retrieved {len(values)} rows from Google Sheets")
     
-    # Get today's date
     today = datetime.now().date()
-    # today = datetime(2025, 12, 2).date()
-    print(f"Today's date: {today.strftime('%d.%m.%Y')}")
     logger.info(f"Filtering emails with dates before: {today.strftime('%d.%m.%Y')}")
-    print()
     
-    # Filter emails based on date
     filtered_emails = []
-    skipped_future_dates = []
-    current_date = None  # Track the current date as we iterate
+    current_date = None
     
-    for idx, row in enumerate(values, start=1):
-        # Skip empty rows
+    for row in values:
         if not row or not row[0].strip():
             continue
         
         email = row[0].strip()
         date_str = row[1].strip() if len(row) > 1 else ""
         
-        # Check if this row has a new date
         row_date = parse_date(date_str)
         
         if row_date is not None:
-            # This row has a date, update the current date
             current_date = row_date
-            logger.debug(f"Row {idx}: New date found - {date_str} (parsed as {current_date})")
         
-        # If we have a current date, check if this email should be included
         if current_date is not None:
-            # Only include emails with dates before today (not including today)
             if current_date < today:
                 filtered_emails.append(email)
-            else:
-                skipped_future_dates.append((email, current_date.strftime('%d.%m')))
     
-    # Print summary
-    print(f"Total rows processed: {len(values)}")
-    print(f"Emails with dates before today: {len(filtered_emails)}")
-    
-    logger.info(f"Filtered results: {len(filtered_emails)} emails to process, {len(skipped_future_dates)} skipped (future dates)")
-    
-    if skipped_future_dates:
-        print(f"Emails with future dates (skipped): {len(skipped_future_dates)}")
-        print("  Future dates skipped:")
-        for email, date in skipped_future_dates[:5]:  # Show first 5
-            print(f"    - {email} ({date})")
-        if len(skipped_future_dates) > 5:
-            print(f"    ... and {len(skipped_future_dates) - 5} more")
-    
-    print()
+    logger.info(f"Filtered results: {len(filtered_emails)} emails to process")
     return filtered_emails
 
 
-def upload_emails_bulk(emails):
+def upload_emails_bulk(emails, api_key):
     """
     Attempts to upload multiple emails to Iterable using bulk API.
-    This is expected to fail for banned emails.
-    
-    Args:
-        emails (list): List of email addresses to upload
-        
-    Returns:
-        dict: Response from Iterable API
+    Returns details on success/fail counts and specifically imported (failed to ban) emails.
     """
-    logger.info(f"Preparing bulk upload for {len(emails)} emails")
-    
     headers = {
-        'Api-Key': ITERABLE_API_KEY,
+        'Api-Key': api_key,
         'Content-Type': 'application/json'
     }
     
@@ -291,7 +238,7 @@ def upload_emails_bulk(emails):
         {
             'email': email,
             'dataFields': {
-                'source': 'google_sheets_banned_list'
+                'source': 'google_sheets_banned_list_check'
             }
         }
         for email in emails
@@ -302,9 +249,6 @@ def upload_emails_bulk(emails):
     }
     
     try:
-        print(f"Sending bulk request with {len(emails)} emails...")
-        logger.debug(f"Sending POST request to {ITERABLE_BULK_API_URL}")
-        
         response = requests.post(
             ITERABLE_BULK_API_URL,
             headers=headers,
@@ -312,16 +256,9 @@ def upload_emails_bulk(emails):
             timeout=30
         )
         
-        logger.info(f"Received response with status code: {response.status_code}")
-        
         response_data = response.json() if response.content else {}
         
-        # Check if emails were actually successfully imported
-        # Even with 200 status, emails can fail due to being banned/forgotten
         success_count = response_data.get('successCount', 0)
-        fail_count = response_data.get('failCount', 0)
-        
-        logger.info(f"API Response - Success: {success_count}, Failed: {fail_count}")
         
         # Get all the different types of failed/blocked emails
         failed_updates = response_data.get('failedUpdates', {})
@@ -329,9 +266,6 @@ def upload_emails_bulk(emails):
         invalid_emails = response_data.get('invalidEmails', [])
         not_found_emails = failed_updates.get('notFoundEmails', [])
         invalid_data_emails = failed_updates.get('invalidDataEmails', [])
-        
-        logger.debug(f"Blocked breakdown - Forgotten: {len(forgotten_emails)}, Invalid: {len(invalid_emails)}, "
-                    f"Not Found: {len(not_found_emails)}, Invalid Data: {len(invalid_data_emails)}")
         
         # Collect ALL blocked/failed emails (convert to lowercase for comparison)
         all_blocked_emails = set(
@@ -343,30 +277,20 @@ def upload_emails_bulk(emails):
             )
         )
         
-        # Determine which emails were successfully imported
-        # Only if successCount > 0, then find which ones were NOT blocked
+        # Identify imported emails (Successes = Not Blocked)
         imported_emails = []
         if success_count > 0:
-            # Case-insensitive comparison: check if email.lower() is NOT in blocked set
             imported_emails = [email for email in emails if email.lower() not in all_blocked_emails]
-            logger.warning(f"UNEXPECTED: {len(imported_emails)} emails were successfully imported: {imported_emails}")
-        
-        # Consider it a "success" (for our purposes) only if emails were actually imported
-        actually_imported = success_count > 0
         
         return {
-            'status_code': response.status_code,
-            'response': response_data,
-            'success': actually_imported,
+            'success': success_count > 0, # "Success" here means the API accepted them (which is BAD for us)
             'blocked_count': len(all_blocked_emails),
             'imported_count': success_count,
-            'imported_emails': imported_emails  # List of emails that were imported
+            'imported_emails': imported_emails
         }
     except requests.exceptions.RequestException as e:
         logger.error(f"Request failed: {e}")
         return {
-            'status_code': None,
-            'response': {'error': str(e)},
             'success': False,
             'blocked_count': 0,
             'imported_count': 0,
@@ -374,173 +298,77 @@ def upload_emails_bulk(emails):
         }
 
 
-def main():
+def process_domain(domain_name, api_key, emails):
     """
-    Main function to orchestrate the email upload process.
+    Process a specific domain: Upload emails and report results to Slack.
     """
-    # Get today's date for reporting
-    today = datetime.now().date()
-    check_time = datetime.now()
-    
-    logger.info("=" * 60)
-    logger.info("Starting Banned Email Bulk Upload Script")
-    logger.info(f"Check date: {today.strftime('%A, %B %d, %Y')}")
-    logger.info(f"Check time: {check_time.strftime('%H:%M:%S')}")
-    logger.info("=" * 60)
-    
-    print("=" * 60)
-    print("Starting Banned Email Bulk Upload Script")
-    print(f"Check date: {today.strftime('%A, %B %d, %Y')}")
-    print(f"Check time: {check_time.strftime('%H:%M:%S')}")
-    print("=" * 60)
-    print()
-    
-    # Get emails from Google Sheets
-    try:
-        emails = get_emails_from_sheet()
-        logger.info(f"Successfully retrieved {len(emails)} emails from Google Sheets")
-    except Exception as e:
-        logger.error(f"ERROR reading from Google Sheets: {e}", exc_info=True)
-        print(f"ERROR reading from Google Sheets: {e}")
-        return
-    
-    if not emails:
-        logger.warning("No emails to process. Exiting.")
-        print("No emails to process. Exiting.")
-        return
-    
-    print()
-    print("=" * 60)
-    print(f"Attempting to bulk upload {len(emails)} emails to Iterable")
-    print("(These are expected to fail as banned emails)")
-    print("=" * 60)
-    print()
-    
-    logger.info(f"Starting bulk upload of {len(emails)} emails to Iterable")
-    
-    # Split emails into batches if needed
+    logger.info(f"--- Processing Domain: {domain_name} ---")
+    print(f"Processing Domain: {domain_name}")
+
     batches = [emails[i:i + BATCH_SIZE] for i in range(0, len(emails), BATCH_SIZE)]
     
-    logger.info(f"Split into {len(batches)} batch(es) (max {BATCH_SIZE} emails per batch)")
-    print(f"Uploading in {len(batches)} batch(es) (max {BATCH_SIZE} emails per batch)")
-    print()
-    
-    # Upload each batch
-    all_results = []
-    total_blocked = 0
     total_imported = 0
-    all_imported_emails = []  # Track all successfully imported emails
+    all_imported_emails = []
     
-    for idx, batch in enumerate(batches, 1):
-        print(f"[Batch {idx}/{len(batches)}] Uploading {len(batch)} emails...")
-        result = upload_emails_bulk(batch)
-        all_results.append(result)
-        
-        total_blocked += result.get('blocked_count', 0)
+    for batch in batches:
+        result = upload_emails_bulk(batch, api_key)
         total_imported += result.get('imported_count', 0)
-        
-        # Collect imported emails
-        imported_in_batch = result.get('imported_emails', [])
-        all_imported_emails.extend(imported_in_batch)
-        
-        if result['success']:
-            print(f"  ⚠️  UNEXPECTED: {result['imported_count']} emails were imported!")
-            if imported_in_batch:
-                print(f"  Imported emails:")
-                for email in imported_in_batch[:10]:  # Show first 10
-                    print(f"    - {email}")
-                if len(imported_in_batch) > 10:
-                    print(f"    ... and {len(imported_in_batch) - 10} more")
-        else:
-            print(f"  ✓ EXPECTED: All emails blocked/rejected")
-            print(f"  Blocked: {result.get('blocked_count', 0)}")
-            if result.get('response'):
-                forgotten = result['response'].get('failedUpdates', {}).get('forgottenEmails', [])
-                invalid = result['response'].get('invalidEmails', [])
-                if forgotten:
-                    print(f"  Forgotten (banned): {len(forgotten)}")
-                if invalid:
-                    print(f"  Invalid: {len(invalid)}")
-        print()
-    
-    # Summary
-    print("=" * 60)
-    print("Upload Summary")
-    print("=" * 60)
-    total_emails = len(emails)
-    successful_batches = sum(1 for r in all_results if r['success'])
-    failed_batches = sum(1 for r in all_results if not r['success'])
-    
-    logger.info("=" * 60)
-    logger.info("Upload Summary")
-    logger.info("=" * 60)
-    logger.info(f"Total emails processed: {total_emails}")
-    logger.info(f"Total batches: {len(batches)}")
-    logger.info(f"Emails blocked (banned/invalid): {total_blocked}")
-    logger.info(f"Emails imported: {total_imported}")
-    
-    print(f"Total emails processed: {total_emails}")
-    print(f"Total batches: {len(batches)}")
-    print(f"Emails blocked (banned/invalid): {total_blocked}")
-    print(f"Emails imported: {total_imported}")
-    print()
-    
-    if total_imported > 0:
-        logger.warning(f"WARNING: {total_imported} emails were imported successfully (NOT banned as expected)")
-        logger.warning(f"Imported emails: {all_imported_emails}")
-        
-        print("⚠️  WARNING: Some emails were imported successfully!")
-        print(f"   {total_imported} emails were NOT banned as expected.")
-        print()
-        print("List of imported emails:")
-        for email in all_imported_emails:
-            print(f"  - {email}")
+        all_imported_emails.extend(result.get('imported_emails', []))
+
+    # Logic for Slack Notification
+    if total_imported == 0:
+        # GOOD: All emails were blocked
+        logger.info(f"Domain {domain_name}: SUCCESS - All emails blocked.")
+        slack_msg = f"SSL на {domain_name} залито"
     else:
-        logger.info("SUCCESS: All emails were blocked as expected (banned/invalid emails)")
-        print("✓ All emails were blocked as expected (banned/invalid emails)")
-    
-    # Send summary to Slack
-    print()
-    print("=" * 60)
-    print("Sending summary to Slack...")
-    print("=" * 60)
-    
-    logger.info("Preparing to send summary to Slack")
-    
-    # Build Slack message
-    slack_message = "📊Iterable Banned Email Check Summary\n\n"
-    slack_message += f"Check Date: {today.strftime('%A, %B %d, %Y')}\n"
-    slack_message += f"Check Time: {check_time.strftime('%H:%M:%S')}\n"
-    slack_message += f"Emails checked: Dates before {today.strftime('%d.%m.%Y')}\n\n"
-    slack_message += f"Total emails processed: {total_emails}\n"
-    slack_message += f"Total batches: {len(batches)}\n"
-    slack_message += f"Emails blocked (banned/invalid): {total_blocked}\n"
-    slack_message += f"Emails imported: {total_imported}\n\n"
-    
-    if total_imported > 0:
-        slack_message += "⚠️ WARNING: Some emails were imported successfully!\n"
-        slack_message += f"   {total_imported} emails were NOT banned as expected.\n\n"
-        slack_message += "List of imported emails:\n"
-        for email in all_imported_emails:
-            slack_message += f"{email}\n"
-    else:
-        slack_message += "✓ All emails were blocked as expected (banned/invalid emails)"
-    
-    # Send to Slack
+        # BAD: Some emails got through
+        logger.warning(f"Domain {domain_name}: FAIL - {total_imported} emails imported.")
+        emails_str = ", ".join(all_imported_emails)
+        # Truncate if too long for Slack
+        if len(emails_str) > 1000:
+             emails_str = emails_str[:1000] + "... (truncated)"
+        
+        slack_msg = f"На {domain_name} не залилось: {emails_str}"
+
+    # Send Slack Message
     if SLACK_USER_ID:
-        logger.info(f"Sending Slack notification to user: {SLACK_USER_ID}")
-        success = send_message_to_slack(SLACK_USER_ID, slack_message)
-        if success:
-            logger.info("Slack notification sent successfully")
-            print("✓ Summary sent to Slack successfully")
-        else:
-            logger.error("Failed to send Slack notification")
-            print("✗ Failed to send summary to Slack")
+        send_message_to_slack(SLACK_USER_ID, slack_msg)
     else:
-        logger.warning("SLACK_USER_ID not set - skipping Slack notification")
-        print("⚠️  SLACK_USER_ID not set - skipping Slack notification")
-        print("   Set SLACK_USER_ID environment variable to enable Slack notifications")
+        print(f"SKIP SLACK: {slack_msg}")
+
+
+def main():
+    """
+    Main function to orchestrate the email upload process across multiple domains.
+    """
+    today = datetime.now().date()
     
+    logger.info("=" * 60)
+    logger.info("Starting Banned Email Bulk Upload Script (Multi-Domain)")
+    logger.info("=" * 60)
+    
+    # 1. Get emails from Google Sheets (Once)
+    try:
+        emails = get_emails_from_sheet()
+        if not emails:
+            logger.warning("No emails to process. Exiting.")
+            return
+        logger.info(f"Loaded {len(emails)} emails from source.")
+    except Exception as e:
+        logger.error(f"ERROR reading from Google Sheets: {e}", exc_info=True)
+        return
+
+    # 2. Iterate through domains
+    print(f"Found {len(ITERABLE_API_KEYS)} domains to process.")
+    
+    for domain, key in ITERABLE_API_KEYS.items():
+        try:
+            process_domain(domain, key, emails)
+        except Exception as e:
+            logger.error(f"Error processing domain {domain}: {e}")
+            if SLACK_USER_ID:
+                send_message_to_slack(SLACK_USER_ID, f"Error processing {domain}: {str(e)}")
+
     logger.info("Script execution completed")
     logger.info("=" * 60)
 
