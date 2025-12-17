@@ -435,7 +435,7 @@ def process_domain(domain_name, api_key, emails):
                 
                 if drive_link:
                     # Send message with Google Drive link
-                    slack_msg = f"На {domain_name} не залилось {total_imported} emails.\nFile: {drive_link}"
+                    slack_msg = f"На {domain_name} не залилось {total_imported} контактів.\nФайл з контактами які не залились: {drive_link}"
                     
                     if SLACK_USER_ID:
                         send_message_to_slack(SLACK_USER_ID, slack_msg)
