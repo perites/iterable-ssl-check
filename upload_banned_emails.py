@@ -167,6 +167,7 @@ def upload_to_google_drive(filepath):
     """
     Upload a file to Google Drive and return a shareable link.
     Uses the same Google credentials as the Sheets API.
+    File is shared with domain users only (organization members).
     
     Returns:
         str: Shareable link to the file, or None if upload failed
@@ -202,16 +203,21 @@ def upload_to_google_drive(filepath):
         
         file_id = file.get('id')
         
-        # Make file publicly accessible (anyone with link can view)
+        # Make file accessible to domain users only (organization members)
+        # This restricts access to users in your Google Workspace domain
         drive_service.permissions().create(
             fileId=file_id,
-            body={'type': 'anyone', 'role': 'reader'}
+            body={
+                'type': 'domain',  # Only users in your domain
+                'role': 'reader',   # Can view but not edit
+                'domain': os.getenv('GOOGLE_WORKSPACE_DOMAIN', '')  # Your organization domain
+            }
         ).execute()
         
         # Get shareable link
         shareable_link = file.get('webViewLink')
         
-        logger.info(f"File uploaded to Google Drive successfully: {shareable_link}")
+        logger.info(f"File uploaded to Google Drive (domain-restricted): {shareable_link}")
         return shareable_link
         
     except Exception as e:
