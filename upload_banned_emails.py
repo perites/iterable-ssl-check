@@ -9,6 +9,7 @@ Only processes emails with dates prior to today (not including today).
 import json
 import os
 import logging
+import argparse
 from datetime import datetime
 from dotenv import load_dotenv
 from google.oauth2.credentials import Credentials
@@ -18,6 +19,15 @@ import requests
 
 # Load environment variables from .env file
 load_dotenv()
+
+# Parse command-line arguments
+parser = argparse.ArgumentParser(description='Check banned emails in Iterable across multiple domains')
+parser.add_argument(
+    '--ssl-check-channel', '-scc',
+    action='store_true',
+    help='Send results to SSL check channel (uses SCC_WORKFLOW_WEBHOOK_URL)'
+)
+args = parser.parse_args()
 
 # Setup logging - write to both console and file
 log_dir = "logs"
@@ -81,8 +91,14 @@ except json.JSONDecodeError:
 ITERABLE_BULK_API_URL = os.getenv("ITERABLE_BULK_API_URL", "https://api.iterable.com/api/users/bulkUpdate")
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", "1000"))
 
-# Slack Configuration
-SLACK_WEBHOOK_URL = os.getenv("WORKFLOW_WEBHOOK_URL", "")
+# Slack Configuration - Select webhook based on command-line argument
+if args.ssl_check_channel:
+    SLACK_WEBHOOK_URL = os.getenv("SCC_WORKFLOW_WEBHOOK_URL", "")
+    logger.info("Using SSL check channel webhook (SCC_WORKFLOW_WEBHOOK_URL)")
+else:
+    SLACK_WEBHOOK_URL = os.getenv("WORKFLOW_WEBHOOK_URL", "")
+    logger.info("Using default webhook (WORKFLOW_WEBHOOK_URL)")
+
 SLACK_USER_ID = os.getenv("SLACK_USER_ID", "")
 
 # Validate required environment variables
@@ -346,6 +362,10 @@ def main():
     
     logger.info("=" * 60)
     logger.info("Starting Banned Email Bulk Upload Script (Multi-Domain)")
+    if args.ssl_check_channel:
+        logger.info("Mode: SSL Check Channel")
+    else:
+        logger.info("Mode: Default Channel")
     logger.info("=" * 60)
     
     # 1. Get emails from Google Sheets (Once)
