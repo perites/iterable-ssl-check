@@ -324,11 +324,12 @@ def process_domain(domain_name, api_key, emails):
         # BAD: Some emails got through
         logger.warning(f"Domain {domain_name}: FAIL - {total_imported} emails imported.")
         emails_str = "\n".join(all_imported_emails)
+        logger.debug(emails_str)
         # Truncate if too long for Slack
         if len(emails_str) > 1000:
              emails_str = emails_str[:1000] + "... (truncated)"
         
-        slack_msg = f"На {domain_name} не залилось: \n{emails_str}"
+        slack_msg = f"На {domain_name} не залилось {len(all_imported_emails)} контактів: \n{emails_str}"
 
     # Send Slack Message
     if SLACK_USER_ID:
