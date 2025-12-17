@@ -68,7 +68,10 @@ GOOGLE_CREDENTIALS_JSON = {
     "token_uri": os.getenv("GOOGLE_TOKEN_URI", "https://oauth2.googleapis.com/token"),
     "client_id": os.getenv("GOOGLE_CLIENT_ID"),
     "client_secret": os.getenv("GOOGLE_CLIENT_SECRET"),
-    "scopes": ["https://www.googleapis.com/auth/spreadsheets.readonly"],
+    "scopes": [
+        "https://www.googleapis.com/auth/spreadsheets.readonly",
+        "https://www.googleapis.com/auth/drive.file"  # For uploading CSV files
+    ],
     "universe_domain": "googleapis.com",
     "account": os.getenv("GOOGLE_ACCOUNT", ""),
     "expiry": os.getenv("GOOGLE_TOKEN_EXPIRY", "2025-12-02T17:44:45.532101Z")
@@ -158,6 +161,62 @@ def send_message_to_slack(slack_user_id, message):
     except requests.exceptions.RequestException as e:
         logger.warning(f"Failed to send Slack message: {e}")
         return False
+
+
+def upload_to_google_drive(filepath):
+    """
+    Upload a file to Google Drive and return a shareable link.
+    Uses the same Google credentials as the Sheets API.
+    
+    Returns:
+        str: Shareable link to the file, or None if upload failed
+    """
+    try:
+        # Load credentials from OAuth2 user credentials
+        creds = Credentials(
+            token=GOOGLE_CREDENTIALS_JSON['token'],
+            refresh_token=GOOGLE_CREDENTIALS_JSON['refresh_token'],
+            token_uri=GOOGLE_CREDENTIALS_JSON['token_uri'],
+            client_id=GOOGLE_CREDENTIALS_JSON['client_id'],
+            client_secret=GOOGLE_CREDENTIALS_JSON['client_secret'],
+            scopes=['https://www.googleapis.com/auth/drive.file']
+        )
+        
+        # Build Drive API service
+        from googleapiclient.http import MediaFileUpload
+        drive_service = build('drive', 'v3', credentials=creds)
+        
+        # File metadata
+        file_metadata = {
+            'name': os.path.basename(filepath),
+            'mimeType': 'text/csv'
+        }
+        
+        # Upload file
+        media = MediaFileUpload(filepath, mimetype='text/csv', resumable=True)
+        file = drive_service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields='id, webViewLink'
+        ).execute()
+        
+        file_id = file.get('id')
+        
+        # Make file publicly accessible (anyone with link can view)
+        drive_service.permissions().create(
+            fileId=file_id,
+            body={'type': 'anyone', 'role': 'reader'}
+        ).execute()
+        
+        # Get shareable link
+        shareable_link = file.get('webViewLink')
+        
+        logger.info(f"File uploaded to Google Drive successfully: {shareable_link}")
+        return shareable_link
+        
+    except Exception as e:
+        logger.error(f"Failed to upload file to Google Drive: {e}")
+        return None
 
 
 def parse_date(date_str):
@@ -336,22 +395,73 @@ def process_domain(domain_name, api_key, emails):
         # GOOD: All emails were blocked
         logger.info(f"Domain {domain_name}: SUCCESS - All emails blocked.")
         slack_msg = f"SSL на {domain_name} залито"
+        
+        if SLACK_USER_ID:
+            send_message_to_slack(SLACK_USER_ID, slack_msg)
+        else:
+            print(f"SKIP SLACK: {slack_msg}")
     else:
         # BAD: Some emails got through
         logger.warning(f"Domain {domain_name}: FAIL - {total_imported} emails imported.")
-        emails_str = "\n".join(all_imported_emails)
-        logger.debug(emails_str)
-        # Truncate if too long for Slack
-        if len(emails_str) > 1000:
-             emails_str = emails_str[:1000] + "... (truncated)"
         
-        slack_msg = f"На {domain_name} не залилось {len(all_imported_emails)} контактів: \n{emails_str}"
-
-    # Send Slack Message
-    if SLACK_USER_ID:
-        send_message_to_slack(SLACK_USER_ID, slack_msg)
-    else:
-        print(f"SKIP SLACK: {slack_msg}")
+        if total_imported <= 20:
+            # Send as text message
+            emails_str = ", ".join(all_imported_emails)
+            slack_msg = f"На {domain_name} не залилось: {emails_str}"
+            
+            if SLACK_USER_ID:
+                send_message_to_slack(SLACK_USER_ID, slack_msg)
+            else:
+                print(f"SKIP SLACK: {slack_msg}")
+        else:
+            # Send as CSV file via Google Drive
+            today = datetime.now()
+            date_str = today.strftime("%d%m")  # Format: DDMM (e.g., 1712 for Dec 17)
+            csv_filename = f"{domain_name}_{date_str}_SSL_IMPORTED.csv"
+            csv_filepath = os.path.join("logs", csv_filename)
+            
+            # Create CSV file
+            try:
+                with open(csv_filepath, 'w', encoding='utf-8') as f:
+                    f.write("email\n")  # Header
+                    for email in all_imported_emails:
+                        f.write(f"{email}\n")
+                
+                logger.info(f"Created CSV file: {csv_filepath}")
+                
+                # Upload to Google Drive and get shareable link
+                drive_link = upload_to_google_drive(csv_filepath)
+                
+                if drive_link:
+                    # Send message with Google Drive link
+                    slack_msg = f"На {domain_name} не залилось {total_imported} emails.\nFile: {drive_link}"
+                    
+                    if SLACK_USER_ID:
+                        send_message_to_slack(SLACK_USER_ID, slack_msg)
+                        print(f"✓ CSV file uploaded to Google Drive and link sent to Slack")
+                    else:
+                        print(f"SKIP SLACK: {slack_msg}")
+                else:
+                    # Fallback: send message with local file reference
+                    slack_msg = f"На {domain_name} не залилось {total_imported} emails. Local file: {csv_filename}"
+                    
+                    if SLACK_USER_ID:
+                        send_message_to_slack(SLACK_USER_ID, slack_msg)
+                    else:
+                        print(f"SKIP SLACK: {slack_msg}")
+                    
+                    print(f"⚠️  CSV file created locally (Google Drive upload failed): {csv_filepath}")
+                
+            except Exception as e:
+                logger.error(f"Failed to create CSV file: {e}")
+                # Fallback to truncated text message
+                emails_str = ", ".join(all_imported_emails[:20])
+                slack_msg = f"На {domain_name} не залилось {total_imported} emails (showing first 20): {emails_str}"
+                
+                if SLACK_USER_ID:
+                    send_message_to_slack(SLACK_USER_ID, slack_msg)
+                else:
+                    print(f"SKIP SLACK: {slack_msg}")
 
 
 def main():
