@@ -403,11 +403,12 @@ def process_domain(domain_name, api_key, emails):
     else:
         # BAD: Some emails got through
         logger.warning(f"Domain {domain_name}: FAIL - {total_imported} emails imported.")
-        
+        logger.debug("\n".join(all_imported_emails))
+
         if total_imported <= 20:
             # Send as text message
-            emails_str = ", ".join(all_imported_emails)
-            slack_msg = f"На {domain_name} не залилось: {emails_str}"
+            emails_str = "\n".join(all_imported_emails)
+            slack_msg = f"На {domain_name} не залилось {total_imported} контактів: \n{emails_str}"
             
             if SLACK_USER_ID:
                 send_message_to_slack(SLACK_USER_ID, slack_msg)
