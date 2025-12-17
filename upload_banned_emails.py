@@ -168,6 +168,7 @@ def upload_to_google_drive(filepath):
     Upload a file to Google Drive and return a shareable link.
     Uses the same Google credentials as the Sheets API.
     File is shared with domain users only (organization members).
+    Optionally uploads to a specific folder if GOOGLE_DRIVE_FOLDER_ID is set.
     
     Returns:
         str: Shareable link to the file, or None if upload failed
@@ -192,6 +193,12 @@ def upload_to_google_drive(filepath):
             'name': os.path.basename(filepath),
             'mimeType': 'text/csv'
         }
+        
+        # Add folder if specified
+        folder_id = os.getenv('GOOGLE_DRIVE_FOLDER_ID', '')
+        if folder_id:
+            file_metadata['parents'] = [folder_id]
+            logger.debug(f"Uploading to folder: {folder_id}")
         
         # Upload file
         media = MediaFileUpload(filepath, mimetype='text/csv', resumable=True)
@@ -424,7 +431,8 @@ def process_domain(domain_name, api_key, emails):
             # Send as CSV file via Google Drive
             today = datetime.now()
             date_str = today.strftime("%d%m")  # Format: DDMM (e.g., 1712 for Dec 17)
-            csv_filename = f"{domain_name}_{date_str}_SSL_IMPORTED.csv"
+            time_str = today.strftime("%H%M")  # Format: HHMM (e.g., 2046 for 20:46)
+            csv_filename = f"{domain_name}_{date_str}_{time_str}_SSL_IMPORTED.csv"
             csv_filepath = os.path.join("logs", csv_filename)
             
             # Create CSV file
